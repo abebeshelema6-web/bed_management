@@ -4,111 +4,106 @@ require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../includes/functions.php';
 require_login();
 $pdo = getDB();
-require_role(['ADMINISTRATOR','RECEPTION','MANAGER','NURSE']);
+require_role(['ADMINISTRATOR','MANAGER']);
 
 $id = (int)($_GET['id'] ?? 0);
-if (!$id) { header('Location: /kghbms/patients/list.php'); exit; }
-if (has_role(['NURSE']) && !is_patient_assigned_to_nurse($pdo, $id, current_user_id())) {
-    http_response_code(403);
-    include __DIR__ . '/../includes/403.php';
-    exit;
-}
+if (!$id) { header('Location: /kghbms/beds/list.php'); exit; }
 
-$ps = $pdo->prepare('SELECT * FROM patients WHERE patient_id = ?');
-$ps->execute([$id]); $p = $ps->fetch();
-if (!$p) { set_flash('danger','Patient not found.'); header('Location: /kghbms/patients/list.php'); exit; }
+$bedRow = $pdo->prepare('SELECT b.*, r.room_number, w.name AS ward_name
+    FROM beds b JOIN rooms r ON r.room_id=b.room_id JOIN wards w ON w.ward_id=r.ward_id WHERE b.bed_id=?');
+$bedRow->execute([$id]); $bed = $bedRow->fetch();
+if (!$bed) { set_flash('danger','Bed not found.'); header('Location: /kghbms/beds/list.php'); exit; }
+
+$rooms  = $pdo->query("SELECT r.room_id, r.room_number, r.room_type, w.name AS ward_name, d.name AS dept_name
+    FROM rooms r JOIN wards w ON w.ward_id=r.ward_id AND w.status='ACTIVE'
+    JOIN departments d ON d.department_id=w.department_id
+    WHERE r.status='ACTIVE' ORDER BY d.name, w.name, r.room_number")->fetchAll();
 
 $errors = [];
-$form   = $p;
+$form   = $bed;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
     $form = [
-        'full_name'               => trim($_POST['full_name'] ?? ''),
-        'gender'                  => $_POST['gender'] ?? '',
-        'date_of_birth'           => $_POST['date_of_birth'] ?? '',
-        'phone'                   => trim($_POST['phone'] ?? ''),
-        'address'                 => trim($_POST['address'] ?? ''),
-        'emergency_contact_name'  => trim($_POST['emergency_contact_name'] ?? ''),
-        'emergency_contact_phone' => trim($_POST['emergency_contact_phone'] ?? ''),
+        'room_id'    => (int)($_POST['room_id'] ?? 0),
+        'bed_number' => trim($_POST['bed_number'] ?? ''),
+        'bed_type'   => $_POST['bed_type'] ?? 'STANDARD',
+        'notes'      => trim($_POST['notes'] ?? ''),
+        'is_active'  => (int)($_POST['is_active'] ?? 1),
     ];
-    if (empty($form['full_name']))   $errors[] = 'Full name is required.';
-    if (!in_array($form['gender'], ['MALE','FEMALE','OTHER'])) $errors[] = 'Gender is required.';
-    if (empty($form['date_of_birth'])) $errors[] = 'Date of birth is required.';
-    elseif ($form['date_of_birth'] > date('Y-m-d')) $errors[] = 'Date of birth cannot be in the future.';
+    if (!$form['room_id'])    $errors[] = 'Room is required.';
+    if (!$form['bed_number']) $errors[] = 'Bed number is required.';
+    if (!in_array($form['bed_type'], ['STANDARD','ICU','PEDIATRIC','MATERNITY','ELECTRIC'])) $errors[] = 'Invalid bed type.';
 
     if (empty($errors)) {
-        $pdo->prepare('UPDATE patients SET full_name=?,gender=?,date_of_birth=?,phone=?,address=?,emergency_contact_name=?,emergency_contact_phone=? WHERE patient_id=?')
-            ->execute([$form['full_name'],$form['gender'],$form['date_of_birth'],
-                       $form['phone']?:null,$form['address']?:null,
-                       $form['emergency_contact_name']?:null,$form['emergency_contact_phone']?:null,$id]);
-        audit($pdo, current_user_id(), 'UPDATE_PATIENT', 'patients', $id, "Updated: {$form['full_name']}");
-        set_flash('success','Patient updated successfully.');
-        header("Location: /kghbms/patients/view.php?id=$id"); exit;
+        try {
+            $pdo->prepare('UPDATE beds SET room_id=?,bed_number=?,bed_type=?,notes=?,is_active=? WHERE bed_id=?')
+                ->execute([$form['room_id'],$form['bed_number'],$form['bed_type'],$form['notes']?:null,$form['is_active'],$id]);
+            audit($pdo, current_user_id(), 'EDIT_BED', 'beds', $id, "Updated: {$form['bed_number']}");
+            set_flash('success', "Bed <strong>{$form['bed_number']}</strong> updated.");
+            header('Location: /kghbms/beds/list.php');
+            exit;
+        } catch (PDOException $e) {
+            $errors[] = str_contains($e->getMessage(),'Duplicate') ? 'Bed number already exists in this room.' : $e->getMessage();
+        }
     }
 }
 
-$pageTitle = 'Edit Patient';
+$pageTitle = 'Edit Bed';
 require_once __DIR__ . '/../includes/header.php';
 ?>
 <div class="page-header">
-    <div>
-        <h1><i class="fas fa-user-edit me-2 text-warning"></i>Edit Patient</h1>
-        <nav aria-label="breadcrumb"><ol class="breadcrumb">
-            <li class="breadcrumb-item"><a href="/kghbms/patients/list.php">Patients</a></li>
-            <li class="breadcrumb-item"><a href="/kghbms/patients/view.php?id=<?= $id ?>"><?= e($p['patient_number']) ?></a></li>
-            <li class="breadcrumb-item active">Edit</li>
-        </ol></nav>
-    </div>
+    <div><h1><i class="fas fa-edit me-2 text-warning"></i>Edit Bed</h1>
+    <nav aria-label="breadcrumb"><ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="/kghbms/beds/list.php">Beds</a></li>
+        <li class="breadcrumb-item active"><?= e($bed['bed_number']) ?></li>
+    </ol></nav></div>
 </div>
 <div class="row justify-content-center">
-<div class="col-12 col-xl-8">
+<div class="col-12 col-md-6">
 <div class="card">
-    <div class="card-header"><i class="fas fa-id-card me-2"></i>Edit — <?= e($p['patient_number']) ?></div>
+    <div class="card-header"><i class="fas fa-bed me-2"></i><?= e($bed['bed_number']) ?> — <?= e($bed['ward_name']) ?></div>
     <div class="card-body">
-        <?php if ($errors): ?>
-        <div class="alert alert-danger"><ul class="mb-0"><?php foreach ($errors as $err): ?><li><?= e($err) ?></li><?php endforeach; ?></ul></div>
-        <?php endif; ?>
+        <?php if ($errors): ?><div class="alert alert-danger"><ul class="mb-0"><?php foreach ($errors as $err): ?><li><?= e($err) ?></li><?php endforeach; ?></ul></div><?php endif; ?>
         <form method="post" data-loading>
             <?= csrf_field() ?>
-            <div class="row g-3">
-                <div class="col-12">
-                    <label class="form-label">Full Name <span class="required-mark">*</span></label>
-                    <input type="text" name="full_name" class="form-control" required maxlength="150" value="<?= e($form['full_name']) ?>">
-                </div>
-                <div class="col-md-6">
-                    <label class="form-label">Gender <span class="required-mark">*</span></label>
-                    <select name="gender" class="form-select" required>
-                        <?php foreach (['MALE','FEMALE','OTHER'] as $g): ?>
-                        <option value="<?= $g ?>" <?= $form['gender']===$g?'selected':'' ?>><?= $g ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <div class="col-md-6">
-                    <label class="form-label">Date of Birth <span class="required-mark">*</span></label>
-                    <input type="date" name="date_of_birth" class="form-control" required max="<?= date('Y-m-d') ?>" value="<?= e($form['date_of_birth']) ?>">
-                </div>
-                <div class="col-md-6">
-                    <label class="form-label">Phone</label>
-                    <input type="tel" name="phone" class="form-control" maxlength="20" value="<?= e($form['phone']??'') ?>">
-                </div>
-                <div class="col-12">
-                    <label class="form-label">Address</label>
-                    <textarea name="address" class="form-control" rows="2" maxlength="255"><?= e($form['address']??'') ?></textarea>
-                </div>
-                <div class="col-12"><div class="section-divider"></div><h6 class="text-muted">Emergency Contact</h6></div>
-                <div class="col-md-6">
-                    <label class="form-label">Contact Name</label>
-                    <input type="text" name="emergency_contact_name" class="form-control" maxlength="100" value="<?= e($form['emergency_contact_name']??'') ?>">
-                </div>
-                <div class="col-md-6">
-                    <label class="form-label">Contact Phone</label>
-                    <input type="tel" name="emergency_contact_phone" class="form-control" maxlength="20" value="<?= e($form['emergency_contact_phone']??'') ?>">
-                </div>
-                <div class="col-12 d-flex gap-2 mt-2">
-                    <button type="submit" class="btn btn-warning"><i class="fas fa-save me-1"></i>Save Changes</button>
-                    <a href="/kghbms/patients/view.php?id=<?= $id ?>" class="btn btn-outline-secondary">Cancel</a>
-                </div>
+            <div class="mb-3">
+                <label class="form-label fw-semibold">Room <span class="required-mark">*</span></label>
+                <select name="room_id" class="form-select" required>
+                    <option value="">Select room…</option>
+                    <?php foreach ($rooms as $r): ?>
+                    <option value="<?= $r['room_id'] ?>" <?= $form['room_id']==$r['room_id']?'selected':'' ?>>
+                        <?= e($r['dept_name'].' › '.$r['ward_name'].' › Room '.$r['room_number']) ?>
+                    </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="mb-3">
+                <label class="form-label fw-semibold">Bed Number <span class="required-mark">*</span></label>
+                <input type="text" name="bed_number" class="form-control" required maxlength="20" value="<?= e($form['bed_number']) ?>">
+            </div>
+            <div class="mb-3">
+                <label class="form-label fw-semibold">Bed Type</label>
+                <select name="bed_type" class="form-select">
+                    <?php foreach (['STANDARD','ICU','PEDIATRIC','MATERNITY','ELECTRIC'] as $t): ?>
+                    <option value="<?= $t ?>" <?= $form['bed_type']===$t?'selected':'' ?>><?= $t ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="mb-3">
+                <label class="form-label fw-semibold">Notes</label>
+                <textarea name="notes" class="form-control" rows="2" maxlength="255"><?= e($form['notes']??'') ?></textarea>
+            </div>
+            <div class="mb-4">
+                <label class="form-label fw-semibold">Active in Register</label>
+                <select name="is_active" class="form-select">
+                    <option value="1" <?= $form['is_active']?'selected':'' ?>>Yes — Active</option>
+                    <option value="0" <?= !$form['is_active']?'selected':'' ?>>No — Retired</option>
+                </select>
+            </div>
+            <div class="d-flex gap-2">
+                <button type="submit" class="btn btn-warning"><i class="fas fa-save me-1"></i>Save Changes</button>
+                <a href="/kghbms/beds/list.php" class="btn btn-outline-secondary">Cancel</a>
             </div>
         </form>
     </div>
